@@ -1,18 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Diff,
-  Hunk,
-  computeNewLineNumber,
-  computeOldLineNumber,
-  getChangeKey,
-  parseDiff,
-  type ChangeData,
-  type ChangeEventArgs,
-  type FileData,
-} from "react-diff-view";
 import { askStream } from "@/lib/api";
+import { Markdown } from "@/components/Markdown";
+import { MARKER, lineNo, parseUnifiedDiff, type DiffLine, type LineType } from "@/lib/diff";
 
 interface Sel {
   fileIndex: number;
@@ -29,40 +20,21 @@ interface Ask {
   status: "streaming" | "done" | "error";
 }
 
-function lineNo(c: ChangeData): number {
-  const n = computeNewLineNumber(c);
-  return n > 0 ? n : computeOldLineNumber(c);
-}
-
-function marker(c: ChangeData): string {
-  return c.type === "insert" ? "+" : c.type === "delete" ? "-" : " ";
-}
-
-// 選択 change から claude へ渡す unified diff 断片を組み立てる。
-function buildFragment(file: FileData, flat: FlatChange[], a: number, b: number): string {
-  const slice = flat.slice(a, b + 1);
-  const header = `--- a/${file.oldPath}\n+++ b/${file.newPath}`;
-  const hunkHeader = slice[0]?.hunkHeader ?? "";
-  const body = slice.map((f) => marker(f.change) + f.change.content).join("\n");
-  return [header, hunkHeader, body].filter(Boolean).join("\n");
-}
-
-interface FlatChange {
-  change: ChangeData;
-  hunkHeader: string;
-}
-
-function flatten(file: FileData): FlatChange[] {
-  const out: FlatChange[] = [];
-  for (const h of file.hunks) {
-    for (const c of h.changes) out.push({ change: c, hunkHeader: h.content });
-  }
-  return out;
-}
+const CODE_COLOR: Record<LineType, string> = {
+  insert: "text-verdict-pass",
+  delete: "text-verdict-fail",
+  hunk: "text-primary",
+  normal: "text-foreground/70",
+  meta: "text-muted-foreground",
+};
 
 export default function DiffViewer({ diff }: { diff: string }) {
-  const files = useMemo(() => parseDiff(diff), [diff]);
-  const flats = useMemo(() => files.map(flatten), [files]);
+  const files = useMemo(() => parseUnifiedDiff(diff), [diff]);
+  // 選択可能行（content 行）だけを抜き出した配列をファイルごとに用意。
+  const contents = useMemo(
+    () => files.map((f) => f.lines.filter((l) => l.type === "insert" || l.type === "delete" || l.type === "normal")),
+    [files],
+  );
 
   const [sel, setSel] = useState<Sel | null>(null);
   const selRef = useRef<Sel | null>(null);
@@ -78,12 +50,15 @@ export default function DiffViewer({ diff }: { diff: string }) {
   const confirm = useCallback(
     (s: Sel) => {
       const file = files[s.fileIndex];
-      const flat = flats[s.fileIndex];
+      const content = contents[s.fileIndex];
       const a = Math.min(s.anchor, s.focus);
       const b = Math.max(s.anchor, s.focus);
-      const fragment = buildFragment(file, flat, a, b);
-      const startLine = lineNo(flat[a].change);
-      const endLine = lineNo(flat[b].change);
+      const picked = content.slice(a, b + 1);
+      if (picked.length === 0) return;
+      const body = picked.map((l) => MARKER[l.type] + l.text).join("\n");
+      const fragment = [file.header, picked[0].hunkHeader, body].filter(Boolean).join("\n");
+      const startLine = lineNo(picked[0]);
+      const endLine = lineNo(picked[picked.length - 1]);
       const filePath = file.newPath || file.oldPath;
 
       const id = ++askId.current;
@@ -99,20 +74,18 @@ export default function DiffViewer({ diff }: { diff: string }) {
             setAsks((prev) => prev.map((x) => (x.id === id ? { ...x, text: x.text + t } : x))),
           onDone: (result) =>
             setAsks((prev) =>
-              prev.map((x) =>
-                x.id === id ? { ...x, text: result || x.text, status: "done" } : x,
-              ),
+              prev.map((x) => (x.id === id ? { ...x, text: result || x.text, status: "done" } : x)),
             ),
           onError: (msg) =>
             setAsks((prev) =>
               prev.map((x) =>
-                x.id === id ? { ...x, text: x.text + `\n\n[エラー] ${msg}`, status: "error" } : x,
+                x.id === id ? { ...x, text: x.text + `\n\n\`[エラー] ${msg}\``, status: "error" } : x,
               ),
             ),
         },
       );
     },
-    [files, flats],
+    [files, contents],
   );
 
   useEffect(() => {
@@ -126,80 +99,128 @@ export default function DiffViewer({ diff }: { diff: string }) {
     return () => window.removeEventListener("mouseup", up);
   }, [confirm]);
 
-  const eventsFor = (fileIndex: number, keyToIndex: Map<string, number>) => {
-    const start = (args: ChangeEventArgs) => {
-      if (!args.change) return;
-      const idx = keyToIndex.get(getChangeKey(args.change));
-      if (idx === undefined) return;
-      draggingRef.current = true;
-      setSelBoth({ fileIndex, anchor: idx, focus: idx });
-    };
-    const extend = (args: ChangeEventArgs) => {
-      if (!draggingRef.current || !args.change) return;
-      const idx = keyToIndex.get(getChangeKey(args.change));
-      if (idx === undefined) return;
-      setSelBoth(selRef.current ? { ...selRef.current, focus: idx } : null);
-    };
-    return { onMouseDown: start, onMouseEnter: extend };
-  };
-
   return (
-    <div className="flex flex-1 gap-4 overflow-hidden">
-      <div className="flex-1 overflow-auto select-none p-4">
+    <div className="grid flex-1 grid-cols-[1fr_minmax(22rem,34%)] overflow-hidden">
+      {/* diff 本体 */}
+      <div className="select-none overflow-auto px-5 py-5">
         {files.map((file, fi) => {
-          const flat = flats[fi];
-          const keyToIndex = new Map(flat.map((f, i) => [getChangeKey(f.change), i]));
-          const selectedKeys =
-            sel && sel.fileIndex === fi
-              ? flat
-                  .slice(Math.min(sel.anchor, sel.focus), Math.max(sel.anchor, sel.focus) + 1)
-                  .map((f) => getChangeKey(f.change))
-              : [];
-          const events = eventsFor(fi, keyToIndex);
+          let selIdx = -1; // content 行カウンタ
           return (
-            <div key={file.oldPath + file.newPath + fi} className="mb-6 overflow-hidden rounded border border-zinc-300">
-              <div className="border-b border-zinc-300 bg-zinc-100 px-3 py-2 font-mono text-sm text-zinc-700">
-                {file.newPath || file.oldPath}
+            <div key={(file.newPath || file.oldPath) + fi} className="surface mb-4 overflow-hidden">
+              <div className="flex items-center gap-2 border-b border-border bg-card/40 px-3 py-2">
+                <span className="font-mono text-xs text-foreground/80">{file.newPath || file.oldPath}</span>
               </div>
-              <Diff
-                viewType="unified"
-                diffType={file.type}
-                hunks={file.hunks}
-                gutterEvents={events}
-                codeEvents={events}
-                selectedChanges={selectedKeys}
-              >
-                {(hunks) => hunks.map((h) => <Hunk key={h.content} hunk={h} />)}
-              </Diff>
+              <div className="overflow-x-auto bg-muted/15 py-1 font-mono text-xs leading-relaxed">
+                {file.lines.map((line, li) => {
+                  const selectable = line.type === "insert" || line.type === "delete" || line.type === "normal";
+                  const idx = selectable ? ++selIdx : -1;
+                  const selected =
+                    selectable &&
+                    sel?.fileIndex === fi &&
+                    idx >= Math.min(sel.anchor, sel.focus) &&
+                    idx <= Math.max(sel.anchor, sel.focus);
+                  return (
+                    <Row
+                      key={li}
+                      line={line}
+                      selected={selected}
+                      onDown={
+                        selectable
+                          ? () => {
+                              draggingRef.current = true;
+                              setSelBoth({ fileIndex: fi, anchor: idx, focus: idx });
+                            }
+                          : undefined
+                      }
+                      onEnter={
+                        selectable
+                          ? () => {
+                              if (draggingRef.current && selRef.current?.fileIndex === fi)
+                                setSelBoth({ ...selRef.current, focus: idx });
+                            }
+                          : undefined
+                      }
+                    />
+                  );
+                })}
+              </div>
             </div>
           );
         })}
         {files.length === 0 && (
-          <p className="text-zinc-500">diff が空です。対象リポジトリに変更がありません。</p>
+          <p className="text-sm text-muted-foreground">diff が空です。対象リポジトリに変更がありません。</p>
         )}
       </div>
 
-      <aside className="w-[40%] max-w-xl overflow-auto border-l border-zinc-200 p-4 dark:border-zinc-800">
-        <h2 className="mb-3 text-sm font-semibold text-zinc-500">回答</h2>
+      {/* 回答 */}
+      <aside className="overflow-auto border-l border-border px-5 py-5">
+        <h2 className="mb-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">回答</h2>
         {asks.length === 0 && (
-          <p className="text-sm text-zinc-400">
-            左の diff で行範囲をドラッグ選択すると、その箇所についての回答がここに表示されます。
+          <p className="text-sm text-muted-foreground">
+            左の diff で行範囲をドラッグ選択（または単一行クリック）すると、その箇所についての回答がここに表示されます。
           </p>
         )}
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3">
           {asks.map((a) => (
-            <div key={a.id} className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
-              <div className="mb-2 font-mono text-xs text-zinc-500">
-                {a.file} L{a.startLine}
-                {a.endLine !== a.startLine ? `–L${a.endLine}` : ""}
-                {a.status === "streaming" && " · 回答中…"}
-                {a.status === "error" && " · エラー"}
+            <div key={a.id} className="surface p-3">
+              <div className="mb-2 flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                <span className="text-foreground/80">{a.file}</span>
+                <span>
+                  L{a.startLine}
+                  {a.endLine !== a.startLine ? `–L${a.endLine}` : ""}
+                </span>
+                {a.status === "streaming" && (
+                  <span className="ml-auto flex items-center gap-1 text-primary">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                    回答中
+                  </span>
+                )}
+                {a.status === "error" && <span className="ml-auto text-verdict-fail">エラー</span>}
               </div>
-              <div className="whitespace-pre-wrap text-sm leading-relaxed">{a.text || "…"}</div>
+              {a.text ? (
+                <Markdown>{a.text}</Markdown>
+              ) : (
+                <span className="text-sm text-muted-foreground">…</span>
+              )}
             </div>
           ))}
         </div>
       </aside>
+    </div>
+  );
+}
+
+function Row({
+  line,
+  selected,
+  onDown,
+  onEnter,
+}: {
+  line: DiffLine;
+  selected: boolean;
+  onDown?: () => void;
+  onEnter?: () => void;
+}) {
+  const selectable = onDown !== undefined;
+  return (
+    <div
+      onMouseDown={onDown}
+      onMouseEnter={onEnter}
+      className={[
+        "flex",
+        selected ? "bg-primary/15" : selectable ? "hover:bg-foreground/[0.04]" : "",
+        selectable ? "cursor-pointer" : "",
+      ].join(" ")}
+    >
+      <span className="w-10 shrink-0 select-none px-2 text-right text-[11px] text-muted-foreground/40 tabular-nums">
+        {line.oldNo ?? ""}
+      </span>
+      <span className="w-10 shrink-0 select-none px-2 text-right text-[11px] text-muted-foreground/40 tabular-nums">
+        {line.newNo ?? ""}
+      </span>
+      <span className={`flex-1 whitespace-pre pl-2 ${CODE_COLOR[line.type]}`}>
+        {line.type === "hunk" || line.type === "meta" ? line.text : (MARKER[line.type] + line.text) || " "}
+      </span>
     </div>
   );
 }

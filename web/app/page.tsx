@@ -18,7 +18,6 @@ export default function Home() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  // ウォームアップ未完なら数秒ごとに状態を取り直す。
   useEffect(() => {
     if (warmed || diff === null) return;
     const t = setInterval(() => {
@@ -30,27 +29,33 @@ export default function Home() {
   }, [warmed, diff]);
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
-      <header className="flex items-center gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-        <h1 className="text-lg font-semibold">Zetema</h1>
+    <div className="flex h-screen flex-col">
+      <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-3 border-b border-border/80 bg-background/70 px-5 backdrop-blur-xl">
+        <span className="flex size-7 items-center justify-center rounded-lg bg-primary/15 font-mono text-base leading-none text-primary ring-1 ring-primary/25">
+          ζ
+        </span>
+        <span className="font-semibold tracking-tight">Zetema</span>
         <span
-          className={`rounded-full px-2 py-0.5 text-xs ${
+          className={`ml-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs ring-1 ${
             warmed
-              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300"
-              : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+              ? "bg-verdict-pass/10 text-verdict-pass ring-verdict-pass/25"
+              : "bg-verdict-handoff/10 text-verdict-handoff ring-verdict-handoff/25"
           }`}
         >
-          {warmed ? "準備完了" : "ウォームアップ中…"}
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${warmed ? "bg-verdict-pass" : "animate-pulse bg-verdict-handoff"}`}
+          />
+          {warmed ? "準備完了" : "ウォームアップ中"}
         </span>
       </header>
 
       {error && (
-        <div className="m-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+        <div className="m-5 rounded-lg border border-verdict-fail/40 bg-verdict-fail/10 p-3 text-sm text-verdict-fail">
           バックエンドに接続できません: {error}
         </div>
       )}
       {diff !== null && <DiffViewer diff={diff} />}
-      {diff === null && !error && <p className="p-4 text-zinc-500">読み込み中…</p>}
+      {diff === null && !error && <p className="p-5 text-sm text-muted-foreground">読み込み中…</p>}
     </div>
   );
 }
