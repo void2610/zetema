@@ -10,11 +10,12 @@
 
 ```
 backend/   FastAPI + 常駐 claude セッション（stream-json → SSE 変換）
-web/       Next.js + react-diff-view（diff 描画・行選択・SSE 受信）
+web/       Next.js + 自前 diff レンダラ（diff 描画・行選択・SSE 受信）
 ```
 
-- 起動時に backend が対象 repo の `git diff` を取得し、claude セッションを 1 本常駐起動して diff でウォームアップする。
+- 対象 repo と diff（git リビジョン範囲）は **フロントの上部バーから切り替え**られる。切り替えるたびに backend は新しい `git diff` を取得し、claude セッションを張り直して diff でウォームアップする。
 - ブラウザで diff の行範囲をドラッグ選択（または単一行クリック）すると、その箇所が常駐セッションへ送られ、回答が選択に紐づくパネルへ逐次表示される。
+- 役割は「レビュアーを補佐する秘書」。差分の目的・動作を中立的に解説し、評価や意思決定はしない。
 - 自由プロンプト入力は無い。入力チャネルは行範囲選択のみ。固定プロンプトは backend の `--append-system-prompt` に保持され、クライアントからは不可視・変更不可。
 
 ## 必要環境
@@ -29,12 +30,12 @@ web/       Next.js + react-diff-view（diff 描画・行選択・SSE 受信）
 
 ```sh
 cd backend
-uv run server.py --repo /path/to/target-repo            # working tree の diff
-uv run server.py --repo /path/to/target-repo -- HEAD~1  # HEAD~1 との diff
-uv run server.py --repo /path/to/target-repo -- --staged # ステージ済みの diff
+uv run server.py                                        # repo はフロントで設定
+uv run server.py --repo /path/to/target-repo            # 初期 repo を指定（working tree の diff）
+uv run server.py --repo /path/to/target-repo -- HEAD~1  # 初期 diff を HEAD~1 に
 ```
 
-`--port`（既定 8765）/ `--model`（既定 sonnet）も指定可。`--` 以降は `git diff` にそのまま渡す引数。
+`--repo` は省略可（後からフロントの上部バーで設定・切り替え）。`--port`（既定 8765）/ `--model`（既定 sonnet）も指定可。`--` 以降は初期 diff の `git diff` 引数。
 
 ### 2. フロントエンド
 
@@ -56,16 +57,17 @@ NEXT_PUBLIC_API_BASE=http://127.0.0.1:9000 pnpm dev
 
 ```sh
 cd backend
-uv run --with fastapi --with 'uvicorn[standard]' --with pytest pytest tests -v
+uv run --with fastapi --with 'uvicorn[standard]' --with httpx --with pytest pytest tests -v
 ```
 
-統合テストは `claude` を実際に起動する。無い環境では自動 skip。`RUN_CLAUDE_INTEGRATION=0` で明示無効化。
+（`just test` でも可。）統合テストは `claude` を実際に起動する。無い環境では自動 skip。`RUN_CLAUDE_INTEGRATION=0` で明示無効化。
 
 ## データ契約
 
-- `GET /api/diff` → `{ "diff": "<unified diff>", "warmed": <bool> }`
+- `GET /api/source` → `{ repo, rev_range, diff, warmed }`（現在の対象）
+- `POST /api/source` `{ repo, rev_range }` → 対象を切り替え `{ repo, rev_range, diff, warmed:false }` / 失敗時 `400 { error }`
+- `GET /api/warmed` → `{ warmed }`（ウォームアップ完了のポーリング用）
 - `POST /ask` `{ file, range: {start, end}, selected_diff }` → SSE
   - `event: delta` … `{ "text": "..." }`（逐次）
   - `event: done` … `{ "result": "..." }`
   - `event: error` … `{ "message": "...", "exit_code": ... }`
-</content>

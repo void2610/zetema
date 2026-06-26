@@ -3,15 +3,35 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8765";
 
-export interface DiffResponse {
+export interface SourceResponse {
+  repo: string;
+  rev_range: string;
   diff: string;
   warmed: boolean;
 }
 
-export async function fetchDiff(): Promise<DiffResponse> {
-  const res = await fetch(`${API_BASE}/api/diff`);
-  if (!res.ok) throw new Error(`/api/diff ${res.status}`);
+export async function fetchSource(): Promise<SourceResponse> {
+  const res = await fetch(`${API_BASE}/api/source`);
+  if (!res.ok) throw new Error(`/api/source ${res.status}`);
   return res.json();
+}
+
+// 対象 repo / diff を切り替える。失敗時はサーバの error メッセージを Error に載せる。
+export async function setSource(repo: string, rev_range: string): Promise<SourceResponse> {
+  const res = await fetch(`${API_BASE}/api/source`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo, rev_range }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? `/api/source ${res.status}`);
+  return body;
+}
+
+export async function fetchWarmed(): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/api/warmed`);
+  if (!res.ok) return false;
+  return (await res.json()).warmed;
 }
 
 export interface AskRequest {

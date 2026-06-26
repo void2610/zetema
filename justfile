@@ -17,8 +17,8 @@ install:
 
 # バックエンドテスト（単体 + claude 実起動の統合）
 test:
-    cd backend && uv run --with fastapi --with 'uvicorn[standard]' --with pytest pytest tests -v
+    cd backend && uv run --with fastapi --with 'uvicorn[standard]' --with httpx --with pytest pytest tests -v
 
 # 単体テストのみ（claude 不要・高速）
 test-unit:
-    cd backend && uv run --with fastapi --with 'uvicorn[standard]' --with pytest pytest tests/test_parse.py tests/test_diffsource.py -v
+    cd backend && uv run --with fastapi --with 'uvicorn[standard]' --with httpx --with pytest pytest tests/test_parse.py tests/test_diffsource.py tests/test_server.py -v
