@@ -18,16 +18,34 @@ export default function Home() {
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
+  const [booting, setBooting] = useState(true);
 
+  // backend は Next が自動起動する。初回 uv 実行は依存解決で数秒かかるためリトライして待つ。
   useEffect(() => {
-    fetchSource()
-      .then((s) => {
-        setRepo(s.repo);
-        setRev(s.rev_range);
-        setWarmed(s.warmed);
-        if (s.repo) setCurrent({ repo: s.repo, rev: s.rev_range, diff: s.diff });
-      })
-      .catch((e) => setConnError(String(e)));
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < 40; i++) {
+        try {
+          const s = await fetchSource();
+          if (cancelled) return;
+          setRepo(s.repo);
+          setRev(s.rev_range);
+          setWarmed(s.warmed);
+          if (s.repo) setCurrent({ repo: s.repo, rev: s.rev_range, diff: s.diff });
+          setBooting(false);
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+      if (!cancelled) {
+        setBooting(false);
+        setConnError("バックエンドの起動を確認できませんでした");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -141,7 +159,14 @@ export default function Home() {
         </div>
       )}
 
-      {current ? (
+      {booting ? (
+        <div className="flex flex-1 items-center justify-center px-5">
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+            バックエンド起動中…
+          </p>
+        </div>
+      ) : current ? (
         <DiffViewer key={`${current.repo}::${current.rev}`} diff={current.diff} />
       ) : (
         !connError && (
