@@ -173,13 +173,18 @@ export default function DiffViewer({ diff }: { diff: string }) {
   const lockUntilRef = useRef(0);
   // 各 ask の path を直接書き換える（setState だとスクロール毎の再描画が重いため）。
   const pathRefs = useRef<Map<number, SVGPathElement | null>>(new Map());
+  // SVG をスクロール領域内に置くため、grid wrapper を ref で参照して座標基準にする。
+  const gridRef = useRef<HTMLDivElement>(null);
+  // スクロール時の active 判定を次フレームに集約するための rAF id。
+  const scrollRafRef = useRef(0);
 
   const updateConnectors = useCallback(() => {
-    const container = containerRef.current;
+    const grid = gridRef.current;
     const diffCol = diffColRef.current;
-    const aside = asideRef.current;
-    if (!container || !diffCol || !aside) return;
-    const cRect = container.getBoundingClientRect();
+    if (!grid || !diffCol) return;
+    // SVG は grid wrapper の中に inset-0 で配置されているため、座標は grid 相対で OK。
+    // スクロールしても grid の中での相対位置は変わらないので、scroll 毎の再計算は不要。
+    const gRect = grid.getBoundingClientRect();
     const dRect = diffCol.getBoundingClientRect();
     for (const ask of sortedAsks) {
       const path = pathRefs.current.get(ask.id);
@@ -199,22 +204,10 @@ export default function DiffViewer({ diff }: { diff: string }) {
       const eRect = (endRow ?? startRow).getBoundingClientRect();
       const cardRect = card.getBoundingClientRect();
 
-      const srcMidY = (sRect.top + eRect.bottom) / 2;
-      const dstMidY = (cardRect.top + cardRect.bottom) / 2;
-      // 線の両端 (midY) がどちらも viewport の同じ側に外れている場合は描画しない。
-      // 片方でも内側 / もう一方が反対側でも斜めに引きたいので除外しない。
-      const bothAbove = srcMidY < cRect.top && dstMidY < cRect.top;
-      const bothBelow = srcMidY > cRect.bottom && dstMidY > cRect.bottom;
-      if (bothAbove || bothBelow) {
-        path.setAttribute("d", "");
-        continue;
-      }
-
-      const y1 = Math.max(cRect.top + 8, Math.min(cRect.bottom - 8, srcMidY)) - cRect.top;
-      const x1 = dRect.right - cRect.left;
-      const y2 = Math.max(cRect.top + 8, Math.min(cRect.bottom - 8, dstMidY)) - cRect.top;
-      const x2 = cardRect.left - cRect.left;
-      // 制御点を中点に置いた素直な S 字。Δy が無いとほぼ水平、押し下げが大きいほど S 字が深くなる。
+      const y1 = (sRect.top + eRect.bottom) / 2 - gRect.top;
+      const x1 = dRect.right - gRect.left;
+      const y2 = (cardRect.top + cardRect.bottom) / 2 - gRect.top;
+      const x2 = cardRect.left - gRect.left;
       const cx = (x1 + x2) / 2;
       path.setAttribute("d", `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`);
     }
@@ -255,21 +248,25 @@ export default function DiffViewer({ diff }: { diff: string }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const onScroll = useCallback(() => {
-    updateConnectors();
-    if (Date.now() < lockUntilRef.current) return;
-    const diffCol = diffColRef.current;
-    const scroller = scrollRef.current;
-    if (!diffCol || !scroller || asks.length === 0) return;
-    const topRef = scroller.getBoundingClientRect().top + 24;
-    let best: { id: number; dist: number } | null = null;
-    for (const a of asks) {
-      const el = diffCol.querySelector<HTMLElement>(`[data-row="${a.fileIndex}-${a.startIdx}"]`);
-      if (!el) continue;
-      const dist = Math.abs(el.getBoundingClientRect().top - topRef);
-      if (!best || dist < best.dist) best = { id: a.id, dist };
-    }
-    if (best && best.id !== activeAskId) setActiveAskId(best.id);
-  }, [asks, activeAskId, updateConnectors]);
+    // SVG はスクロール領域内なので path 自体は再計算不要。active 検出だけ rAF で集約。
+    if (scrollRafRef.current) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = 0;
+      if (Date.now() < lockUntilRef.current) return;
+      const diffCol = diffColRef.current;
+      const scroller = scrollRef.current;
+      if (!diffCol || !scroller || asks.length === 0) return;
+      const topRef = scroller.getBoundingClientRect().top + 24;
+      let best: { id: number; dist: number } | null = null;
+      for (const a of asks) {
+        const el = diffCol.querySelector<HTMLElement>(`[data-row="${a.fileIndex}-${a.startIdx}"]`);
+        if (!el) continue;
+        const dist = Math.abs(el.getBoundingClientRect().top - topRef);
+        if (!best || dist < best.dist) best = { id: a.id, dist };
+      }
+      if (best && best.id !== activeAskId) setActiveAskId(best.id);
+    });
+  }, [asks, activeAskId]);
 
   // resize / レイアウト変化で曲線とカード位置を再計算。
   useEffect(() => {
@@ -280,6 +277,14 @@ export default function DiffViewer({ diff }: { diff: string }) {
     window.addEventListener("resize", handler);
     return () => window.removeEventListener("resize", handler);
   }, [updateConnectors, positionCards]);
+
+  // ネイティブ scroll リスナー: React 合成イベントより低遅延で paint と同期させる。
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => scroller.removeEventListener("scroll", onScroll);
+  }, [onScroll]);
 
   // asks / folding / viewing が変わるたびにカード位置を再計算。
   // ストリーミングでカード高さも変わるため、layout commit 後にもう一度走らせる。
@@ -401,10 +406,10 @@ export default function DiffViewer({ diff }: { diff: string }) {
           );
         })}
       </div>
+      <div ref={scrollRef} className="absolute inset-0 overflow-auto">
       <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="absolute inset-0 grid grid-cols-[minmax(0,1fr)_minmax(22rem,34%)] gap-x-10 overflow-auto"
+        ref={gridRef}
+        className="relative grid grid-cols-[minmax(0,1fr)_minmax(22rem,34%)] gap-x-10"
       >
       {/* diff 本体 */}
       <div ref={diffColRef} className="select-none px-5 py-5">
@@ -590,8 +595,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
             );
           })}
       </aside>
-      </div>
-      {/* diff の選択範囲 → 回答カード を結ぶベジェ曲線。各 ask 毎に 1 本描画。 */}
+      {/* diff の選択範囲 → 回答カード を結ぶベジェ曲線。スクロール領域内に置いてコンテンツと一緒に composit される。 */}
       <svg
         aria-hidden
         className="pointer-events-none absolute inset-0 z-10 h-full w-full text-primary"
@@ -613,6 +617,8 @@ export default function DiffViewer({ diff }: { diff: string }) {
           );
         })}
       </svg>
+      </div>
+      </div>
     </div>
   );
 }
