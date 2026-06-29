@@ -156,12 +156,16 @@ def make_app() -> FastAPI:
         file = body.get("file", "")
         rng = body.get("range") or {}
         selected_diff = body.get("selected_diff", "")
+        mode = body.get("mode") or "intent"
         if not selected_diff:
             return JSONResponse({"error": "selected_diff is required"}, status_code=400)
         session: ClaudeSession | None = STATE["session"]
         if session is None:
             return JSONResponse({"error": "対象ソースが未設定です"}, status_code=400)
-        msg = render_selection(file, int(rng.get("start", 0)), int(rng.get("end", 0)), selected_diff)
+        msg = render_selection(
+            mode, file, int(rng.get("start", 0)), int(rng.get("end", 0)), selected_diff
+        )
+        print(f"[ask] mode={mode!r} file={file} range=L{rng.get('start')}-L{rng.get('end')}", flush=True)
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()

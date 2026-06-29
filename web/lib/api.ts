@@ -65,10 +65,13 @@ export async function listCommits(repo: string, limit = 30): Promise<CommitEntry
   return (await res.json()).commits ?? [];
 }
 
+export type AskMode = "intent" | "spec" | "tech";
+
 export interface AskRequest {
   file: string;
   range: { start: number; end: number };
   selected_diff: string;
+  mode: AskMode;
 }
 
 export interface AskHandlers {

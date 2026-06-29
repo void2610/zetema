@@ -1,10 +1,45 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Highlight, themes, type Language } from "prism-react-renderer";
-import { askStream } from "@/lib/api";
+import { askStream, type AskMode } from "@/lib/api";
 import { Markdown } from "@/components/Markdown";
 import { MARKER, lineNo, parseUnifiedDiff, type DiffLine, type LineType } from "@/lib/diff";
+
+// 質問の種類。アイコンは Lucide ベースの SVG をインライン定義。
+const ASK_MODES: { id: AskMode; label: string; hint: string; icon: ReactNode }[] = [
+  {
+    id: "intent",
+    label: "意図とレビュー",
+    hint: "変更の意図の解説 + レビュー観点での指摘",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+      </svg>
+    ),
+  },
+  {
+    id: "spec",
+    label: "言語仕様",
+    hint: "選択箇所で使われている構文・組み込み機能の解説",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+        <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+      </svg>
+    ),
+  },
+  {
+    id: "tech",
+    label: "技術解説",
+    hint: "使われているライブラリ・パターン・設計の解説",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+      </svg>
+    ),
+  },
+];
 
 // 拡張子 → Prism 言語名のマッピング（prism-react-renderer の内蔵言語のみ）。
 const EXT_LANG: Record<string, Language> = {
@@ -67,6 +102,7 @@ interface Ask {
   endIdx: number;
   startLine: number;
   endLine: number;
+  mode: AskMode;
   text: string;
   status: "streaming" | "done" | "error";
 }
@@ -113,6 +149,12 @@ export default function DiffViewer({ diff }: { diff: string }) {
 
   const [asks, setAsks] = useState<Ask[]>([]);
   const askId = useRef(0);
+  const [mode, setMode] = useState<AskMode>("intent");
+  // mode state はドラッグ確定時 (mouseup) のコールバックから参照するため ref でも持つ。
+  const modeRef = useRef<AskMode>(mode);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   // diff 内位置で並べる（同期したときに上下関係が直感的になる）。
   const sortedAsks = useMemo(
@@ -267,6 +309,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
       const filePath = file.newPath || file.oldPath;
 
       const id = ++askId.current;
+      const askMode = modeRef.current;
       setAsks((prev) => [
         {
           id,
@@ -276,6 +319,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
           endIdx: b,
           startLine,
           endLine,
+          mode: askMode,
           text: "",
           status: "streaming",
         },
@@ -284,7 +328,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
       setActiveAskId(id);
 
       askStream(
-        { file: filePath, range: { start: startLine, end: endLine }, selected_diff: fragment },
+        { file: filePath, range: { start: startLine, end: endLine }, selected_diff: fragment, mode: askMode },
         {
           onDelta: (t) =>
             setAsks((prev) => prev.map((x) => (x.id === id ? { ...x, text: x.text + t } : x))),
@@ -317,6 +361,37 @@ export default function DiffViewer({ diff }: { diff: string }) {
 
   return (
     <div ref={containerRef} className="relative flex-1 overflow-hidden">
+      {/* 質問モード切替（次の選択範囲の質問種別が決まる）。 */}
+      <div className="absolute right-4 top-3 z-20 flex items-center gap-1 rounded-md border border-border bg-card/85 p-1 shadow-md backdrop-blur">
+        <span className="px-1.5 text-[11px] text-muted-foreground">質問</span>
+        {ASK_MODES.map((m) => {
+          const active = mode === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              aria-label={m.label}
+              aria-pressed={active}
+              onClick={() => setMode(m.id)}
+              className={`group relative flex h-7 w-7 items-center justify-center rounded transition-colors ${
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              {m.icon}
+              {/* ホバー時に意味を吹き出しで表示。 */}
+              <span
+                role="tooltip"
+                className="pointer-events-none absolute right-0 top-full z-30 mt-2 hidden w-56 rounded-md border border-border bg-card px-2.5 py-2 text-left text-[11px] leading-snug text-foreground shadow-lg group-hover:block"
+              >
+                <span className="block font-medium">{m.label}</span>
+                <span className="block text-muted-foreground">{m.hint}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -469,6 +544,17 @@ export default function DiffViewer({ diff }: { diff: string }) {
                 }`}
               >
                 <div className="mb-2 flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                  {(() => {
+                    const m = ASK_MODES.find((x) => x.id === a.mode);
+                    return m ? (
+                      <span
+                        title={m.label}
+                        className="flex h-4 w-4 shrink-0 items-center justify-center text-primary"
+                      >
+                        {m.icon}
+                      </span>
+                    ) : null;
+                  })()}
                   <span className="min-w-0 flex-1 truncate text-foreground/80" title={a.file}>
                     {a.file}
                   </span>
