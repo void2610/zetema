@@ -200,9 +200,18 @@ export default function DiffViewer({ diff }: { diff: string }) {
       const cardRect = card.getBoundingClientRect();
 
       const srcMidY = (sRect.top + eRect.bottom) / 2;
+      const dstMidY = (cardRect.top + cardRect.bottom) / 2;
+      // 線の両端 (midY) がどちらも viewport の同じ側に外れている場合は描画しない。
+      // 片方でも内側 / もう一方が反対側でも斜めに引きたいので除外しない。
+      const bothAbove = srcMidY < cRect.top && dstMidY < cRect.top;
+      const bothBelow = srcMidY > cRect.bottom && dstMidY > cRect.bottom;
+      if (bothAbove || bothBelow) {
+        path.setAttribute("d", "");
+        continue;
+      }
+
       const y1 = Math.max(cRect.top + 8, Math.min(cRect.bottom - 8, srcMidY)) - cRect.top;
       const x1 = dRect.right - cRect.left;
-      const dstMidY = (cardRect.top + cardRect.bottom) / 2;
       const y2 = Math.max(cRect.top + 8, Math.min(cRect.bottom - 8, dstMidY)) - cRect.top;
       const x2 = cardRect.left - cRect.left;
       // 制御点を中点に置いた素直な S 字。Δy が無いとほぼ水平、押し下げが大きいほど S 字が深くなる。
