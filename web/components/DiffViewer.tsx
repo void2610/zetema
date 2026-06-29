@@ -1,9 +1,57 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Highlight, themes, type Language } from "prism-react-renderer";
 import { askStream } from "@/lib/api";
 import { Markdown } from "@/components/Markdown";
 import { MARKER, lineNo, parseUnifiedDiff, type DiffLine, type LineType } from "@/lib/diff";
+
+// 拡張子 → Prism 言語名のマッピング（prism-react-renderer の内蔵言語のみ）。
+const EXT_LANG: Record<string, Language> = {
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  mjs: "javascript",
+  cjs: "javascript",
+  py: "python",
+  rb: "ruby",
+  php: "php",
+  swift: "swift",
+  json: "json",
+  yaml: "yaml",
+  yml: "yaml",
+  md: "markdown",
+  markdown: "markdown",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  css: "css",
+  scss: "scss",
+  sass: "sass",
+  html: "markup",
+  htm: "markup",
+  xml: "markup",
+  svg: "markup",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  m: "objectivec",
+  mm: "objectivec",
+  sql: "sql",
+  diff: "diff",
+  patch: "diff",
+  pl: "perl",
+  ps1: "powershell",
+};
+
+function detectLanguage(path: string): Language | null {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return EXT_LANG[ext] ?? null;
+}
 
 interface Sel {
   fileIndex: number;
@@ -20,11 +68,27 @@ interface Ask {
   status: "streaming" | "done" | "error";
 }
 
-const CODE_COLOR: Record<LineType, string> = {
-  insert: "text-verdict-pass",
-  delete: "text-verdict-fail",
+// 追加/削除は文字背景で表現。文字色はシンタックスハイライト側に任せる。
+const ROW_BG: Record<LineType, string> = {
+  insert: "bg-verdict-pass/10",
+  delete: "bg-verdict-fail/10",
+  hunk: "",
+  normal: "",
+  meta: "",
+};
+const MARKER_BG: Record<LineType, string> = {
+  insert: "bg-verdict-pass/25",
+  delete: "bg-verdict-fail/25",
+  hunk: "",
+  normal: "",
+  meta: "",
+};
+// hunk / meta はコードではないので Prism にかけず色だけ付ける。
+const META_COLOR: Record<LineType, string> = {
+  insert: "",
+  delete: "",
   hunk: "text-primary",
-  normal: "text-foreground/70",
+  normal: "",
   meta: "text-muted-foreground",
 };
 
@@ -123,6 +187,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
           const key = filePath + "@" + fi;
           const isViewed = !!viewed[key];
           const isCollapsed = !!collapsed[key];
+          const language = detectLanguage(filePath);
           return (
             <div
               key={key}
@@ -180,6 +245,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
                       <Row
                         key={li}
                         line={line}
+                        language={language}
                         selected={selected}
                         onDown={
                           selectable
@@ -250,25 +316,27 @@ export default function DiffViewer({ diff }: { diff: string }) {
 
 function Row({
   line,
+  language,
   selected,
   onDown,
   onEnter,
 }: {
   line: DiffLine;
+  language: Language | null;
   selected: boolean;
   onDown?: () => void;
   onEnter?: () => void;
 }) {
   const selectable = onDown !== undefined;
+  const rowBg = selected
+    ? "bg-primary/15"
+    : ROW_BG[line.type] || (selectable ? "hover:bg-foreground/[0.04]" : "");
+  const isCode = line.type === "insert" || line.type === "delete" || line.type === "normal";
   return (
     <div
       onMouseDown={onDown}
       onMouseEnter={onEnter}
-      className={[
-        "flex",
-        selected ? "bg-primary/15" : selectable ? "hover:bg-foreground/[0.04]" : "",
-        selectable ? "cursor-pointer" : "",
-      ].join(" ")}
+      className={["flex", rowBg, selectable ? "cursor-pointer" : ""].join(" ")}
     >
       <span className="w-10 shrink-0 select-none px-2 text-right text-[11px] text-muted-foreground/40 tabular-nums">
         {line.oldNo ?? ""}
@@ -276,9 +344,36 @@ function Row({
       <span className="w-10 shrink-0 select-none px-2 text-right text-[11px] text-muted-foreground/40 tabular-nums">
         {line.newNo ?? ""}
       </span>
-      <span className={`flex-1 whitespace-pre pl-2 ${CODE_COLOR[line.type]}`}>
-        {line.type === "hunk" || line.type === "meta" ? line.text : (MARKER[line.type] + line.text) || " "}
-      </span>
+      {isCode ? (
+        <>
+          <span
+            className={`w-5 shrink-0 select-none text-center text-foreground/60 ${MARKER_BG[line.type]}`}
+          >
+            {MARKER[line.type]}
+          </span>
+          <span className="flex-1 whitespace-pre pl-2">
+            <CodeText text={line.text} language={language} />
+          </span>
+        </>
+      ) : (
+        <span className={`flex-1 whitespace-pre pl-2 ${META_COLOR[line.type]}`}>{line.text}</span>
+      )}
     </div>
+  );
+}
+
+// 1 行ぶんを Prism でハイライト。language 未対応時は素のテキストで返す。
+function CodeText({ text, language }: { text: string; language: Language | null }) {
+  if (!language) return <span>{text || " "}</span>;
+  return (
+    <Highlight code={text || " "} language={language} theme={themes.vsDark}>
+      {({ tokens, getTokenProps }) => (
+        <span>
+          {tokens[0]?.map((token, i) => (
+            <span key={i} {...getTokenProps({ token })} />
+          ))}
+        </span>
+      )}
+    </Highlight>
   );
 }
