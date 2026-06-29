@@ -19,8 +19,23 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // URL クエリに repo/rev があれば backend に再適用してリロード前の状態を復元する。
+      const qs = new URLSearchParams(window.location.search);
+      const qRepo = qs.get("repo") ?? "";
+      const qRev = qs.get("rev") ?? "";
+
       for (let i = 0; i < 40; i++) {
         try {
+          if (qRepo) {
+            const s = await setSource(qRepo, qRev);
+            if (cancelled) return;
+            setRepo(s.repo);
+            setRev(s.rev_range);
+            setWarmed(false);
+            setCurrent({ repo: s.repo, rev: s.rev_range, diff: s.diff });
+            setBooting(false);
+            return;
+          }
           const s = await fetchSource();
           if (cancelled) return;
           setRepo(s.repo);
@@ -42,6 +57,18 @@ export default function Home() {
       cancelled = true;
     };
   }, []);
+
+  // current 変更時に URL を `?repo=...&rev=...` に同期。リロードで同じ diff を復元する。
+  useEffect(() => {
+    if (!current) return;
+    const qs = new URLSearchParams();
+    qs.set("repo", current.repo);
+    if (current.rev) qs.set("rev", current.rev);
+    const search = `?${qs.toString()}`;
+    if (window.location.search !== search) {
+      window.history.replaceState(null, "", `${window.location.pathname}${search}`);
+    }
+  }, [current]);
 
   useEffect(() => {
     if (warmed || !current) return;

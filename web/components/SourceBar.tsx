@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listRepos, listBranches, listCommits, type RepoEntry, type CommitEntry } from "@/lib/api";
 
 type Mode = "preset" | "branch" | "commit";
@@ -31,11 +31,41 @@ export default function SourceBar({ initialRepo, initialRev, current, applying, 
   const [repo, setRepo] = useState(initialRepo);
   const [manual, setManual] = useState(false);
 
-  const [mode, setMode] = useState<Mode>("preset");
+  // initialRev からモードと branch 比較の base/target を推測（リロード復元用）。
+  const inferMode = (r: string): Mode =>
+    r.includes(" ") ? "commit" : r.includes("..") ? "branch" : "preset";
+  const [mode, setMode] = useState<Mode>(inferMode(initialRev));
   const [branches, setBranches] = useState<string[]>([]);
-  const [base, setBase] = useState("");
-  const [target, setTarget] = useState("");
+  const initialBranch = initialRev.includes("..") && !initialRev.includes(" ")
+    ? initialRev.split("..")
+    : ["", ""];
+  const [base, setBase] = useState(initialBranch[0]);
+  const [target, setTarget] = useState(initialBranch[1]);
   const [commits, setCommits] = useState<CommitEntry[]>([]);
+  // commit モード復元用: "<hash>~1 <hash>" の右側の hash を取り出す。
+  const initialCommitHash = (() => {
+    if (!initialRev.includes(" ")) return "";
+    const parts = initialRev.split(" ");
+    return parts.length === 2 ? parts[1] : "";
+  })();
+  const [selectedCommit, setSelectedCommit] = useState(initialCommitHash);
+
+  // クエリ復元で initialRev が遅れて入ってきた場合に一度だけ反映する。
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    if (!initialRev && !initialRepo) return;
+    seeded.current = true;
+    setMode(inferMode(initialRev));
+    if (initialRev.includes("..") && !initialRev.includes(" ")) {
+      const [b, t] = initialRev.split("..");
+      setBase(b);
+      setTarget(t);
+    } else if (initialRev.includes(" ")) {
+      const parts = initialRev.split(" ");
+      if (parts.length === 2) setSelectedCommit(parts[1]);
+    }
+  }, [initialRepo, initialRev]);
 
   useEffect(() => {
     listRepos().then((r) => {
@@ -43,6 +73,11 @@ export default function SourceBar({ initialRepo, initialRev, current, applying, 
       // 候補に無い初期 repo は手動入力扱い。
       if (initialRepo && !r.some((x) => x.path === initialRepo)) setManual(true);
     });
+  }, [initialRepo]);
+
+  // page 側 (URL 復元含む) で適用された repo を内部 state にも反映し、branch 一覧取得をトリガーする。
+  useEffect(() => {
+    if (initialRepo) setRepo(initialRepo);
   }, [initialRepo]);
 
   // repo が確定したらブランチ / コミットを取得（ブランチ比較・コミット選択の選択肢用）。
@@ -192,8 +227,13 @@ export default function SourceBar({ initialRepo, initialRev, current, applying, 
         {mode === "commit" && (
           <select
             className={`${inputCls} min-w-0 flex-1`}
-            value=""
-            onChange={(e) => e.target.value && repo && onApply(repo, `${e.target.value}~1 ${e.target.value}`)}
+            value={commits.some((c) => c.hash === selectedCommit) ? selectedCommit : ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!v || !repo) return;
+              setSelectedCommit(v);
+              onApply(repo, `${v}~1 ${v}`);
+            }}
             disabled={applying || !repo || commits.length === 0}
           >
             <option value="" disabled>
