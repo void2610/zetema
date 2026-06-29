@@ -377,7 +377,6 @@ export default function DiffViewer({ diff }: { diff: string }) {
     <div ref={containerRef} className="relative flex-1 overflow-hidden">
       {/* 質問モード切替（次の選択範囲の質問種別が決まる）。 */}
       <div className="absolute right-4 top-3 z-20 flex items-center gap-1 rounded-md border border-border bg-card/85 p-1 shadow-md backdrop-blur">
-        <span className="px-1.5 text-[11px] text-muted-foreground">質問</span>
         {ASK_MODES.map((m) => {
           const active = mode === m.id;
           return (
