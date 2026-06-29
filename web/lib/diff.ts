@@ -19,6 +19,8 @@ export interface DiffFile {
 }
 
 const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+// "diff --git a/<old> b/<new>" からパスを取り出す（スペースを含むパスは未対応）。
+const DIFF_GIT_RE = /^diff --git a\/(.+?) b\/(.+)$/;
 
 export function parseUnifiedDiff(text: string): DiffFile[] {
   const files: DiffFile[] = [];
@@ -29,8 +31,8 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
   let minus = "";
   let plus = "";
 
-  const newFile = () => {
-    file = { oldPath: "", newPath: "", header: "", lines: [] };
+  const newFile = (oldPath = "", newPath = "") => {
+    file = { oldPath, newPath, header: "", lines: [] };
     files.push(file);
     hunkHeader = "";
     minus = "";
@@ -39,7 +41,8 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
 
   for (const raw of text.split("\n")) {
     if (raw.startsWith("diff --git")) {
-      newFile();
+      const m = DIFF_GIT_RE.exec(raw);
+      newFile(m?.[1] ?? "", m?.[2] ?? "");
       continue;
     }
     if (!file) {
@@ -84,7 +87,8 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
     }
     // それ以外(index 行など)は表示しない
   }
-  return files;
+  // rename only / mode change など、内容差分を持たないエントリは表示しない。
+  return files.filter((f) => f.lines.length > 0);
 }
 
 export const MARKER: Record<LineType, string> = {
