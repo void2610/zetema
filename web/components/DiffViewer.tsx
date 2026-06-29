@@ -520,7 +520,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
       {/* 回答 — 各カードは対応する diff 行の真横に絶対配置する。 */}
       <aside
         ref={asideRef}
-        className="relative border-l border-border"
+        className="relative"
       >
         {sortedAsks.length === 0 && (
           <p className="px-5 py-5 text-sm text-muted-foreground">
