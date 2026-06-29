@@ -47,6 +47,20 @@ export default function DiffViewer({ diff }: { diff: string }) {
   const [asks, setAsks] = useState<Ask[]>([]);
   const askId = useRef(0);
 
+  // ファイルパスをキーにした既読 / 折りたたみ状態。
+  const [viewed, setViewed] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const toggleViewed = (key: string) => {
+    setViewed((prev) => {
+      const next = !prev[key];
+      // Viewed を ON にしたら自動で畳む / OFF で開く。
+      setCollapsed((c) => ({ ...c, [key]: next }));
+      return { ...prev, [key]: next };
+    });
+  };
+  const toggleCollapsed = (key: string) =>
+    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+
   const confirm = useCallback(
     (s: Sel) => {
       const file = files[s.fileIndex];
@@ -105,45 +119,89 @@ export default function DiffViewer({ diff }: { diff: string }) {
       <div className="select-none overflow-auto px-5 py-5">
         {files.map((file, fi) => {
           let selIdx = -1; // content 行カウンタ
+          const filePath = file.newPath || file.oldPath;
+          const key = filePath + "@" + fi;
+          const isViewed = !!viewed[key];
+          const isCollapsed = !!collapsed[key];
           return (
-            <div key={(file.newPath || file.oldPath) + fi} className="surface mb-4 overflow-hidden">
-              <div className="flex items-center gap-2 border-b border-border bg-card/40 px-3 py-2">
-                <span className="font-mono text-xs text-foreground/80">{file.newPath || file.oldPath}</span>
+            <div
+              key={key}
+              className={`surface mb-4 overflow-hidden ${isViewed ? "opacity-60" : ""}`}
+            >
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleCollapsed(key)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleCollapsed(key);
+                  }
+                }}
+                className="flex cursor-pointer items-center gap-2 border-b border-border bg-card/40 px-3 py-2 hover:bg-card/60"
+              >
+                <span
+                  aria-label={isCollapsed ? "ファイルを開く" : "ファイルを畳む"}
+                  className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground"
+                >
+                  <svg
+                    viewBox="0 0 16 16"
+                    fill="currentColor"
+                    className={`h-3 w-3 transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
+                  >
+                    <path d="M3.22 5.97a.75.75 0 0 1 1.06 0L8 9.69l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.03a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
+                </span>
+                <span className="font-mono text-xs text-foreground/80">{filePath}</span>
+                <label
+                  onClick={(e) => e.stopPropagation()}
+                  className="ml-auto flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isViewed}
+                    onChange={() => toggleViewed(key)}
+                    className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                  />
+                  Viewed
+                </label>
               </div>
-              <div className="overflow-x-auto bg-muted/15 py-1 font-mono text-xs leading-relaxed">
-                {file.lines.map((line, li) => {
-                  const selectable = line.type === "insert" || line.type === "delete" || line.type === "normal";
-                  const idx = selectable ? ++selIdx : -1;
-                  const selected =
-                    selectable &&
-                    sel?.fileIndex === fi &&
-                    idx >= Math.min(sel.anchor, sel.focus) &&
-                    idx <= Math.max(sel.anchor, sel.focus);
-                  return (
-                    <Row
-                      key={li}
-                      line={line}
-                      selected={selected}
-                      onDown={
-                        selectable
-                          ? () => {
-                              draggingRef.current = true;
-                              setSelBoth({ fileIndex: fi, anchor: idx, focus: idx });
-                            }
-                          : undefined
-                      }
-                      onEnter={
-                        selectable
-                          ? () => {
-                              if (draggingRef.current && selRef.current?.fileIndex === fi)
-                                setSelBoth({ ...selRef.current, focus: idx });
-                            }
-                          : undefined
-                      }
-                    />
-                  );
-                })}
-              </div>
+              {!isCollapsed && (
+                <div className="overflow-x-auto bg-muted/15 py-1 font-mono text-xs leading-relaxed">
+                  {file.lines.map((line, li) => {
+                    const selectable = line.type === "insert" || line.type === "delete" || line.type === "normal";
+                    const idx = selectable ? ++selIdx : -1;
+                    const selected =
+                      selectable &&
+                      sel?.fileIndex === fi &&
+                      idx >= Math.min(sel.anchor, sel.focus) &&
+                      idx <= Math.max(sel.anchor, sel.focus);
+                    return (
+                      <Row
+                        key={li}
+                        line={line}
+                        selected={selected}
+                        onDown={
+                          selectable
+                            ? () => {
+                                draggingRef.current = true;
+                                setSelBoth({ fileIndex: fi, anchor: idx, focus: idx });
+                              }
+                            : undefined
+                        }
+                        onEnter={
+                          selectable
+                            ? () => {
+                                if (draggingRef.current && selRef.current?.fileIndex === fi)
+                                  setSelBoth({ ...selRef.current, focus: idx });
+                              }
+                            : undefined
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}
