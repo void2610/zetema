@@ -34,6 +34,37 @@ export async function fetchWarmed(): Promise<boolean> {
   return (await res.json()).warmed;
 }
 
+export interface RepoEntry {
+  name: string;
+  path: string;
+}
+
+export async function listRepos(): Promise<RepoEntry[]> {
+  const res = await fetch(`${API_BASE}/api/repos`);
+  if (!res.ok) return [];
+  return (await res.json()).repos ?? [];
+}
+
+export async function listBranches(repo: string): Promise<{ branches: string[]; default: string | null }> {
+  const res = await fetch(`${API_BASE}/api/branches?repo=${encodeURIComponent(repo)}`);
+  if (!res.ok) return { branches: [], default: null };
+  return res.json();
+}
+
+export interface CommitEntry {
+  hash: string;
+  short: string;
+  subject: string;
+  rel_date: string;
+  author: string;
+}
+
+export async function listCommits(repo: string, limit = 30): Promise<CommitEntry[]> {
+  const res = await fetch(`${API_BASE}/api/commits?repo=${encodeURIComponent(repo)}&limit=${limit}`);
+  if (!res.ok) return [];
+  return (await res.json()).commits ?? [];
+}
+
 export interface AskRequest {
   file: string;
   range: { start: number; end: number };

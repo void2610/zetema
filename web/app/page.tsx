@@ -2,13 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import DiffViewer from "@/components/DiffViewer";
+import SourceBar from "@/components/SourceBar";
 import { fetchSource, fetchWarmed, setSource } from "@/lib/api";
-
-const PRESETS: { label: string; rev: string }[] = [
-  { label: "作業ツリー", rev: "" },
-  { label: "ステージ", rev: "--staged" },
-  { label: "直前コミット", rev: "HEAD~1" },
-];
 
 export default function Home() {
   const [repo, setRepo] = useState("");
@@ -58,29 +53,21 @@ export default function Home() {
     return () => clearInterval(t);
   }, [warmed, current]);
 
-  const apply = useCallback(
-    async (revOverride?: string) => {
-      const r = revOverride ?? rev;
-      if (revOverride !== undefined) setRev(revOverride);
-      setApplying(true);
-      setError(null);
-      try {
-        const s = await setSource(repo, r);
-        setWarmed(false);
-        setCurrent({ repo: s.repo, rev: s.rev_range, diff: s.diff });
-        setRepo(s.repo);
-        setRev(s.rev_range);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setApplying(false);
-      }
-    },
-    [repo, rev],
-  );
-
-  const inputCls =
-    "rounded-md border border-border bg-background px-2.5 py-1 font-mono text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/40";
+  const apply = useCallback(async (repoArg: string, revArg: string) => {
+    setApplying(true);
+    setError(null);
+    try {
+      const s = await setSource(repoArg, revArg);
+      setWarmed(false);
+      setCurrent({ repo: s.repo, rev: s.rev_range, diff: s.diff });
+      setRepo(s.repo);
+      setRev(s.rev_range);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplying(false);
+    }
+  }, []);
 
   return (
     <div className="flex h-screen flex-col">
@@ -105,57 +92,18 @@ export default function Home() {
         )}
       </header>
 
-      {/* ソース切り替えバー */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-card/30 px-5 py-2.5">
-        <label className="text-xs text-muted-foreground">repo</label>
-        <input
-          className={`${inputCls} min-w-0 flex-1`}
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && apply()}
-          placeholder="/path/to/target-repo"
-          spellCheck={false}
-        />
-        <label className="ml-1 text-xs text-muted-foreground">diff</label>
-        <input
-          className={`${inputCls} w-44`}
-          value={rev}
-          onChange={(e) => setRev(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && apply()}
-          placeholder="(空)=作業ツリー"
-          spellCheck={false}
-        />
-        <div className="flex items-center gap-1">
-          {PRESETS.map((p) => (
-            <button
-              key={p.label}
-              type="button"
-              onClick={() => apply(p.rev)}
-              disabled={applying || !repo}
-              className="rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={() => apply()}
-          disabled={applying || !repo}
-          className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          {applying ? "適用中…" : "適用"}
-        </button>
-      </div>
+      <SourceBar
+        initialRepo={repo}
+        initialRev={rev}
+        current={current ? { repo: current.repo, rev: current.rev } : null}
+        applying={applying}
+        error={error}
+        onApply={apply}
+      />
 
       {connError && (
         <div className="m-5 rounded-lg border border-verdict-fail/40 bg-verdict-fail/10 p-3 text-sm text-verdict-fail">
           バックエンドに接続できません: {connError}
-        </div>
-      )}
-      {error && (
-        <div className="mx-5 mt-3 rounded-lg border border-verdict-fail/40 bg-verdict-fail/10 p-3 text-sm text-verdict-fail">
-          {error}
         </div>
       )}
 

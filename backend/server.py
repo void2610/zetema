@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from claude_session import ClaudeSession
 from diffsource import git_diff
 from prompts import FIXED_SYSTEM_PROMPT, WARMUP_TEMPLATE, render_selection
+from repos import known_repos, repo_branches, repo_commits
 
 # 起動後はフロントからの切り替えで更新される共有状態。SOURCE_LOCK で切り替えを直列化する。
 STATE: dict = {
@@ -122,6 +123,32 @@ def make_app() -> FastAPI:
     @app.get("/api/warmed")
     async def get_warmed():
         return JSONResponse({"warmed": STATE["warmed"].is_set()})
+
+    @app.get("/api/repos")
+    async def get_repos():
+        return JSONResponse({"repos": known_repos()})
+
+    @app.get("/api/branches")
+    async def get_branches(repo: str = ""):
+        p = Path(repo).expanduser()
+        if not repo or not p.is_dir():
+            return JSONResponse({"error": "repo ディレクトリが不正です"}, status_code=400)
+        try:
+            branches, default = repo_branches(p.resolve())
+        except RuntimeError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"branches": branches, "default": default})
+
+    @app.get("/api/commits")
+    async def get_commits(repo: str = "", limit: int = 30):
+        p = Path(repo).expanduser()
+        if not repo or not p.is_dir():
+            return JSONResponse({"error": "repo ディレクトリが不正です"}, status_code=400)
+        try:
+            commits = repo_commits(p.resolve(), limit)
+        except RuntimeError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"commits": commits})
 
     @app.post("/ask")
     async def ask(req: Request):
