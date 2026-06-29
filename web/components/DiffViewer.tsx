@@ -62,6 +62,9 @@ interface Sel {
 interface Ask {
   id: number;
   file: string;
+  fileIndex: number;
+  startIdx: number; // content 行 idx（diff スクロール同期用）
+  endIdx: number;
   startLine: number;
   endLine: number;
   text: string;
@@ -111,9 +114,133 @@ export default function DiffViewer({ diff }: { diff: string }) {
   const [asks, setAsks] = useState<Ask[]>([]);
   const askId = useRef(0);
 
+  // diff 内位置で並べる（同期したときに上下関係が直感的になる）。
+  const sortedAsks = useMemo(
+    () => [...asks].sort((a, b) => a.fileIndex - b.fileIndex || a.startIdx - b.startIdx),
+    [asks],
+  );
+
+  // diff と回答は同じスクロール空間に置く。
+  const [activeAskId, setActiveAskId] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const diffColRef = useRef<HTMLDivElement>(null);
+  const asideRef = useRef<HTMLDivElement>(null);
+  const askRefs = useRef<Map<number, HTMLDivElement | null>>(new Map());
+  // クリックジャンプ中は active 自動切り替えを抑制（行を通り過ぎる度に切り替わるのを防ぐ）。
+  const lockUntilRef = useRef(0);
+  // 各 ask の path を直接書き換える（setState だとスクロール毎の再描画が重いため）。
+  const pathRefs = useRef<Map<number, SVGPathElement | null>>(new Map());
+
+  const updateConnectors = useCallback(() => {
+    const container = containerRef.current;
+    const diffCol = diffColRef.current;
+    const aside = asideRef.current;
+    if (!container || !diffCol || !aside) return;
+    const cRect = container.getBoundingClientRect();
+    const dRect = diffCol.getBoundingClientRect();
+    for (const ask of sortedAsks) {
+      const path = pathRefs.current.get(ask.id);
+      if (!path) continue;
+      const startRow = diffCol.querySelector<HTMLElement>(
+        `[data-row="${ask.fileIndex}-${ask.startIdx}"]`,
+      );
+      const endRow = diffCol.querySelector<HTMLElement>(
+        `[data-row="${ask.fileIndex}-${ask.endIdx}"]`,
+      );
+      const card = askRefs.current.get(ask.id);
+      if (!startRow || !card) {
+        path.setAttribute("d", "");
+        continue;
+      }
+      const sRect = startRow.getBoundingClientRect();
+      const eRect = (endRow ?? startRow).getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+
+      const srcMidY = (sRect.top + eRect.bottom) / 2;
+      const y1 = Math.max(cRect.top + 8, Math.min(cRect.bottom - 8, srcMidY)) - cRect.top;
+      const x1 = dRect.right - cRect.left;
+      const dstMidY = (cardRect.top + cardRect.bottom) / 2;
+      const y2 = Math.max(cRect.top + 8, Math.min(cRect.bottom - 8, dstMidY)) - cRect.top;
+      const x2 = cardRect.left - cRect.left;
+      // 制御点を中点に置いた素直な S 字。Δy が無いとほぼ水平、押し下げが大きいほど S 字が深くなる。
+      const cx = (x1 + x2) / 2;
+      path.setAttribute("d", `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}`);
+    }
+  }, [sortedAsks]);
+
+
+  // 各回答カードを対応する diff 行の真横に配置。重なる場合は次のカードを下へ押し下げる。
+  const positionCards = useCallback(() => {
+    const aside = asideRef.current;
+    const diffCol = diffColRef.current;
+    if (!aside || !diffCol) return;
+    const aTop = aside.getBoundingClientRect().top;
+    const GAP = 8;
+    let prevBottom = 0;
+    for (const ask of sortedAsks) {
+      const card = askRefs.current.get(ask.id);
+      if (!card) continue;
+      const row = diffCol.querySelector<HTMLElement>(
+        `[data-row="${ask.fileIndex}-${ask.startIdx}"]`,
+      );
+      if (!row) {
+        // 対応行が折りたたみ等で見えない場合はカードも隠す。
+        card.style.display = "none";
+        continue;
+      }
+      card.style.display = "";
+      const desired = row.getBoundingClientRect().top - aTop;
+      const top = Math.max(desired, prevBottom + GAP);
+      card.style.top = `${top}px`;
+      prevBottom = top + card.offsetHeight;
+    }
+    // カード総高が diff より長い場合は aside を伸ばす。
+    aside.style.minHeight = `${prevBottom + GAP}px`;
+  }, [sortedAsks]);
+
   // ファイルパスをキーにした既読 / 折りたたみ状態。
   const [viewed, setViewed] = useState<Record<string, boolean>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const onScroll = useCallback(() => {
+    updateConnectors();
+    if (Date.now() < lockUntilRef.current) return;
+    const diffCol = diffColRef.current;
+    const scroller = scrollRef.current;
+    if (!diffCol || !scroller || asks.length === 0) return;
+    const topRef = scroller.getBoundingClientRect().top + 24;
+    let best: { id: number; dist: number } | null = null;
+    for (const a of asks) {
+      const el = diffCol.querySelector<HTMLElement>(`[data-row="${a.fileIndex}-${a.startIdx}"]`);
+      if (!el) continue;
+      const dist = Math.abs(el.getBoundingClientRect().top - topRef);
+      if (!best || dist < best.dist) best = { id: a.id, dist };
+    }
+    if (best && best.id !== activeAskId) setActiveAskId(best.id);
+  }, [asks, activeAskId, updateConnectors]);
+
+  // resize / レイアウト変化で曲線とカード位置を再計算。
+  useEffect(() => {
+    const handler = () => {
+      positionCards();
+      updateConnectors();
+    };
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, [updateConnectors, positionCards]);
+
+  // asks / folding / viewing が変わるたびにカード位置を再計算。
+  // ストリーミングでカード高さも変わるため、layout commit 後にもう一度走らせる。
+  useEffect(() => {
+    positionCards();
+    updateConnectors();
+    const id = requestAnimationFrame(() => {
+      positionCards();
+      updateConnectors();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [positionCards, updateConnectors, asks, viewed, collapsed]);
   const toggleViewed = (key: string) => {
     setViewed((prev) => {
       const next = !prev[key];
@@ -141,9 +268,20 @@ export default function DiffViewer({ diff }: { diff: string }) {
 
       const id = ++askId.current;
       setAsks((prev) => [
-        { id, file: filePath, startLine, endLine, text: "", status: "streaming" },
+        {
+          id,
+          file: filePath,
+          fileIndex: s.fileIndex,
+          startIdx: a,
+          endIdx: b,
+          startLine,
+          endLine,
+          text: "",
+          status: "streaming",
+        },
         ...prev,
       ]);
+      setActiveAskId(id);
 
       askStream(
         { file: filePath, range: { start: startLine, end: endLine }, selected_diff: fragment },
@@ -178,9 +316,14 @@ export default function DiffViewer({ diff }: { diff: string }) {
   }, [confirm]);
 
   return (
-    <div className="grid flex-1 grid-cols-[1fr_minmax(22rem,34%)] overflow-hidden">
+    <div ref={containerRef} className="relative flex-1 overflow-hidden">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="absolute inset-0 grid grid-cols-[minmax(0,1fr)_minmax(22rem,34%)] gap-x-10 overflow-auto"
+      >
       {/* diff 本体 */}
-      <div className="select-none overflow-auto px-5 py-5">
+      <div ref={diffColRef} className="select-none px-5 py-5">
         {files.map((file, fi) => {
           let selIdx = -1; // content 行カウンタ
           const filePath = file.newPath || file.oldPath;
@@ -188,6 +331,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
           const isViewed = !!viewed[key];
           const isCollapsed = !!collapsed[key];
           const language = detectLanguage(filePath);
+          const activeAsk = sortedAsks.find((x) => x.id === activeAskId);
           return (
             <div
               key={key}
@@ -232,7 +376,8 @@ export default function DiffViewer({ diff }: { diff: string }) {
                 </label>
               </div>
               {!isCollapsed && (
-                <div className="overflow-x-auto bg-muted/15 py-1 font-mono text-xs leading-relaxed">
+                <div className="overflow-x-auto bg-muted/15 font-mono text-xs leading-relaxed">
+                  <div className="min-w-max py-1">
                   {file.lines.map((line, li) => {
                     const selectable = line.type === "insert" || line.type === "delete" || line.type === "normal";
                     const idx = selectable ? ++selIdx : -1;
@@ -241,12 +386,19 @@ export default function DiffViewer({ diff }: { diff: string }) {
                       sel?.fileIndex === fi &&
                       idx >= Math.min(sel.anchor, sel.focus) &&
                       idx <= Math.max(sel.anchor, sel.focus);
+                    const active =
+                      selectable &&
+                      activeAsk?.fileIndex === fi &&
+                      idx >= activeAsk.startIdx &&
+                      idx <= activeAsk.endIdx;
                     return (
                       <Row
                         key={li}
                         line={line}
                         language={language}
                         selected={selected}
+                        active={!!active}
+                        rowKey={selectable ? `${fi}-${idx}` : undefined}
                         onDown={
                           selectable
                             ? () => {
@@ -266,6 +418,7 @@ export default function DiffViewer({ diff }: { diff: string }) {
                       />
                     );
                   })}
+                  </div>
                 </div>
               )}
             </div>
@@ -276,40 +429,95 @@ export default function DiffViewer({ diff }: { diff: string }) {
         )}
       </div>
 
-      {/* 回答 */}
-      <aside className="overflow-auto border-l border-border px-5 py-5">
-        <h2 className="mb-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">回答</h2>
-        {asks.length === 0 && (
-          <p className="text-sm text-muted-foreground">
+      {/* 回答 — 各カードは対応する diff 行の真横に絶対配置する。 */}
+      <aside
+        ref={asideRef}
+        className="relative border-l border-border"
+      >
+        {sortedAsks.length === 0 && (
+          <p className="px-5 py-5 text-sm text-muted-foreground">
             左の diff で行範囲をドラッグ選択（または単一行クリック）すると、その箇所についての回答がここに表示されます。
           </p>
         )}
-        <div className="flex flex-col gap-3">
-          {asks.map((a) => (
-            <div key={a.id} className="surface p-3">
-              <div className="mb-2 flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-                <span className="text-foreground/80">{a.file}</span>
-                <span>
-                  L{a.startLine}
-                  {a.endLine !== a.startLine ? `–L${a.endLine}` : ""}
-                </span>
-                {a.status === "streaming" && (
-                  <span className="ml-auto flex items-center gap-1 text-primary">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-                    回答中
+        {sortedAsks.map((a) => {
+            const isActive = a.id === activeAskId;
+            return (
+              <div
+                key={a.id}
+                ref={(el) => {
+                  askRefs.current.set(a.id, el);
+                }}
+                onClick={() => {
+                  // 回答カードクリックで対応する diff へジャンプ。
+                  setActiveAskId(a.id);
+                  const target = diffColRef.current?.querySelector<HTMLElement>(
+                    `[data-row="${a.fileIndex}-${a.startIdx}"]`,
+                  );
+                  const scroller = scrollRef.current;
+                  if (target && scroller) {
+                    lockUntilRef.current = Date.now() + 500;
+                    const offset =
+                      target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 24;
+                    scroller.scrollTo({ top: offset, behavior: "smooth" });
+                  }
+                }}
+                style={{ left: 12, right: 12 }}
+                className={`surface absolute cursor-pointer p-3 transition-shadow ${
+                  isActive
+                    ? "border-primary/60 shadow-[0_0_0_1px_var(--color-primary)]"
+                    : "hover:border-foreground/20"
+                }`}
+              >
+                <div className="mb-2 flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                  <span className="min-w-0 flex-1 truncate text-foreground/80" title={a.file}>
+                    {a.file}
                   </span>
+                  <span className="shrink-0">
+                    L{a.startLine}
+                    {a.endLine !== a.startLine ? `–L${a.endLine}` : ""}
+                  </span>
+                  {a.status === "streaming" && (
+                    <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-primary">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+                      回答中
+                    </span>
+                  )}
+                  {a.status === "error" && (
+                    <span className="shrink-0 whitespace-nowrap text-verdict-fail">エラー</span>
+                  )}
+                </div>
+                {a.text ? (
+                  <Markdown>{a.text}</Markdown>
+                ) : (
+                  <span className="text-sm text-muted-foreground">…</span>
                 )}
-                {a.status === "error" && <span className="ml-auto text-verdict-fail">エラー</span>}
               </div>
-              {a.text ? (
-                <Markdown>{a.text}</Markdown>
-              ) : (
-                <span className="text-sm text-muted-foreground">…</span>
-              )}
-            </div>
-          ))}
-        </div>
+            );
+          })}
       </aside>
+      </div>
+      {/* diff の選択範囲 → 回答カード を結ぶベジェ曲線。各 ask 毎に 1 本描画。 */}
+      <svg
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-10 h-full w-full text-primary"
+      >
+        {sortedAsks.map((a) => {
+          const isActive = a.id === activeAskId;
+          return (
+            <path
+              key={a.id}
+              ref={(el) => {
+                pathRefs.current.set(a.id, el);
+              }}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={isActive ? 2 : 1.25}
+              strokeOpacity={isActive ? 0.85 : 0.35}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </svg>
     </div>
   );
 }
@@ -318,25 +526,36 @@ function Row({
   line,
   language,
   selected,
+  active,
+  rowKey,
   onDown,
   onEnter,
 }: {
   line: DiffLine;
   language: Language | null;
   selected: boolean;
+  active?: boolean;
+  rowKey?: string;
   onDown?: () => void;
   onEnter?: () => void;
 }) {
   const selectable = onDown !== undefined;
-  const rowBg = selected
+  // active な ask の範囲行も選択中と同じ青で塗る（insert/delete の緑/赤背景より優先）。
+  const rowBg = selected || active
     ? "bg-primary/15"
     : ROW_BG[line.type] || (selectable ? "hover:bg-foreground/[0.04]" : "");
   const isCode = line.type === "insert" || line.type === "delete" || line.type === "normal";
   return (
     <div
+      data-row={rowKey}
       onMouseDown={onDown}
       onMouseEnter={onEnter}
-      className={["flex", rowBg, selectable ? "cursor-pointer" : ""].join(" ")}
+      className={[
+        "flex border-l-2",
+        active ? "border-primary" : "border-transparent",
+        rowBg,
+        selectable ? "cursor-pointer" : "",
+      ].join(" ")}
     >
       <span className="w-10 shrink-0 select-none px-2 text-right text-[11px] text-muted-foreground/40 tabular-nums">
         {line.oldNo ?? ""}
